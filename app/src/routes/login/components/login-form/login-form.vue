@@ -1,36 +1,11 @@
-<template>
-	<form @submit.prevent="onSubmit">
-		<v-input v-model="email" autofocus autocomplete="username" type="email" :placeholder="t('email')" />
-		<v-input v-model="password" type="password" autocomplete="current-password" :placeholder="t('password')" />
-
-		<transition-expand>
-			<v-input v-if="requiresTFA" v-model="otp" type="text" :placeholder="t('otp')" autofocus />
-		</transition-expand>
-
-		<v-notice v-if="error" type="warning">
-			{{ errorFormatted }}
-		</v-notice>
-		<div class="buttons">
-			<v-button type="submit" :loading="loggingIn" large>{{ t('sign_in') }}</v-button>
-			<router-link to="/reset-password" class="forgot-password">
-				{{ t('forgot_password') }}
-			</router-link>
-		</div>
-
-		<sso-links :providers="providers" />
-	</form>
-</template>
-
-<script lang="ts">
-import { useI18n } from 'vue-i18n';
-import { defineComponent, ref, computed, watch, onMounted } from 'vue';
-import { useRouter } from 'vue-router';
-import ssoLinks from '../sso-links.vue';
+<script setup lang="ts">
+import { RequestError } from '@/api';
 import { login } from '@/auth';
-import api, { RequestError } from '@/api';
 import { translateAPIError } from '@/lang';
-import { useUserStore } from '@/stores';
-import { unexpectedError } from '@/utils/unexpected-error';
+import { useUserStore } from '@/stores/user';
+import { computed, ref, toRefs, watch } from 'vue';
+import { useI18n } from 'vue-i18n';
+import { useRouter } from 'vue-router';
 
 type Credentials = {
 	email: string;
@@ -38,96 +13,122 @@ type Credentials = {
 	otp?: string;
 };
 
-export default defineComponent({
-	components: { ssoLinks },
-	setup() {
-		const { t } = useI18n();
+const props = defineProps<{
+	provider: string;
+}>();
 
-		const router = useRouter();
+const { t } = useI18n();
 
-		const loggingIn = ref(false);
-		const email = ref<string | null>(null);
-		const password = ref<string | null>(null);
-		const error = ref<RequestError | string | null>(null);
-		const otp = ref<string | null>(null);
-		const requiresTFA = ref(false);
-		const providers = ref([]);
-		const userStore = useUserStore();
+const router = useRouter();
 
-		onMounted(() => fetchProviders());
+const { provider } = toRefs(props);
+const loggingIn = ref(false);
+const email = ref<string | null>(null);
+const password = ref<string | null>(null);
+const error = ref<RequestError | string | null>(null);
+const otp = ref<string | null>(null);
+const requiresTFA = ref(false);
+const userStore = useUserStore();
 
-		watch(email, () => {
-			if (requiresTFA.value === true) requiresTFA.value = false;
-		});
+watch(email, () => {
+	if (requiresTFA.value === true) requiresTFA.value = false;
+});
 
-		const errorFormatted = computed(() => {
-			// Show "Wrong username or password" for wrongly formatted emails as well
-			if (error.value === 'INVALID_PAYLOAD') {
-				return translateAPIError('INVALID_CREDENTIALS');
-			}
+watch(provider, () => {
+	email.value = null;
+	password.value = null;
+	error.value = null;
+	otp.value = null;
+	requiresTFA.value = false;
+});
 
-			if (error.value) {
-				return translateAPIError(error.value);
-			}
-			return null;
-		});
+const errorFormatted = computed(() => {
+	// Show "Wrong username or password" for wrongly formatted emails as well
+	if (error.value === 'INVALID_PAYLOAD') {
+		return translateAPIError('INVALID_CREDENTIALS');
+	}
 
-		return {
-			t,
-			errorFormatted,
-			error,
-			email,
-			password,
-			onSubmit,
-			loggingIn,
-			translateAPIError,
-			otp,
-			requiresTFA,
-			providers,
+	if (error.value) {
+		return translateAPIError(error.value);
+	}
+
+	return null;
+});
+
+async function onSubmit() {
+	// Simple RegEx, not for validation, but to prevent unnecessary login requests when the value is clearly invalid
+	const emailRegex = /^\S+@\S+$/;
+
+	if (email.value === null || !emailRegex.test(email.value) || password.value === null) {
+		error.value = 'INVALID_PAYLOAD';
+		return;
+	}
+
+	try {
+		loggingIn.value = true;
+
+		const credentials: Credentials = {
+			email: email.value,
+			password: password.value,
 		};
 
-		async function fetchProviders() {
-			try {
-				const response = await api.get('/auth');
-				providers.value = response.data.data;
-			} catch (err: any) {
-				unexpectedError(err);
-			}
+		if (otp.value) {
+			credentials.otp = otp.value;
 		}
 
-		async function onSubmit() {
-			if (email.value === null || password.value === null) return;
+		await login({ provider: provider.value, credentials });
 
-			try {
-				loggingIn.value = true;
+		const redirectQuery = router.currentRoute.value.query.redirect as string;
 
-				const credentials: Credentials = {
-					email: email.value,
-					password: password.value,
-				};
+		let lastPage: string | null = null;
 
-				if (otp.value) {
-					credentials.otp = otp.value;
-				}
-
-				await login(credentials);
-
-				// Stores are hydrated after login
-				const lastPage = userStore.currentUser?.last_page;
-				router.push(lastPage || '/collections');
-			} catch (err: any) {
-				if (err.response?.data?.errors?.[0]?.extensions?.code === 'INVALID_OTP' && requiresTFA.value === false) {
-					requiresTFA.value = true;
-				} else {
-					error.value = err.response?.data?.errors?.[0]?.extensions?.code || err;
-				}
-			} finally {
-				loggingIn.value = false;
-			}
+		if (userStore.currentUser && 'last_page' in userStore.currentUser) {
+			lastPage = userStore.currentUser.last_page;
 		}
-	},
-});
+
+		router.push(redirectQuery || lastPage || '/content');
+	} catch (err: any) {
+		if (err.errors?.[0]?.extensions?.code === 'INVALID_OTP' && requiresTFA.value === false) {
+			requiresTFA.value = true;
+			error.value = null;
+		} else {
+			error.value = err.errors?.[0]?.extensions?.code || err;
+		}
+	} finally {
+		loggingIn.value = false;
+	}
+}
 </script>
+
+<template>
+	<form novalidate @submit.prevent="onSubmit">
+		<v-input v-model="email" autofocus autocomplete="username" type="email" :placeholder="t('email')" />
+		<interface-system-input-password :value="password" autocomplete="current-password" @input="password = $event" />
+
+		<transition-expand>
+			<v-input
+				v-if="requiresTFA"
+				v-model="otp"
+				type="text"
+				autocomplete="one-time-code"
+				:placeholder="t('otp')"
+				autofocus
+			/>
+		</transition-expand>
+
+		<v-notice v-if="error" type="warning">
+			{{ errorFormatted }}
+		</v-notice>
+		<div class="buttons">
+			<v-button class="sign-in" type="submit" :loading="loggingIn" large>
+				<v-text-overflow :text="t('sign_in')" />
+			</v-button>
+			<router-link to="/reset-password" class="forgot-password">
+				{{ t('forgot_password') }}
+			</router-link>
+		</div>
+	</form>
+</template>
 
 <style lang="scss" scoped>
 .v-input,
@@ -142,11 +143,15 @@ export default defineComponent({
 }
 
 .forgot-password {
-	color: var(--foreground-subdued);
+	color: var(--theme--foreground-subdued);
 	transition: color var(--fast) var(--transition);
 
 	&:hover {
-		color: var(--foreground-normal);
+		color: var(--theme--foreground);
 	}
+}
+
+.sign-in {
+	max-width: 50%;
 }
 </style>

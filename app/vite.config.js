@@ -1,146 +1,108 @@
-import { defineConfig, searchForWorkspaceRoot } from 'vite';
-import vue from '@vitejs/plugin-vue';
-import md from 'vite-plugin-md';
+import { APP_SHARED_DEPS } from '@directus/extensions';
+import { generateExtensionsEntrypoint, resolveFsExtensions, resolveModuleExtensions } from '@directus/extensions/node';
 import yaml from '@rollup/plugin-yaml';
-import path from 'path';
-import {
-	ensureExtensionDirs,
-	getPackageExtensions,
-	getLocalExtensions,
-	generateExtensionsEntry,
-} from '@directus/shared/utils/node';
-import { APP_SHARED_DEPS, APP_EXTENSION_TYPES, APP_EXTENSION_PACKAGE_TYPES } from '@directus/shared/constants';
-import hljs from 'highlight.js';
-import hljsGraphQL from './src/utils/hljs-graphql';
+import UnheadVite from '@unhead/addons/vite';
+import vue from '@vitejs/plugin-vue';
+import fs from 'node:fs';
+import path from 'node:path';
+import { searchForWorkspaceRoot } from 'vite';
+import { defineConfig } from 'vitest/config';
+import vueDevtools from 'vite-plugin-vue-devtools';
 
-hljs.registerLanguage('graphql', hljsGraphQL);
+const API_PATH = path.join('..', 'api');
+
+/*
+ * @TODO This extension path is hardcoded to the env default (./extensions). This won't work
+ * as expected when extensions are read from a different location locally through the
+ * EXTENSIONS_LOCATION env var
+ */
+const EXTENSIONS_PATH = path.join(API_PATH, 'extensions');
+
+const extensionsPathExists = fs.existsSync(EXTENSIONS_PATH);
 
 // https://vitejs.dev/config/
 export default defineConfig({
+	css: {
+		preprocessorOptions: {
+			scss: {
+				api: 'modern-compiler',
+			},
+		},
+	},
 	plugins: [
 		directusExtensions(),
-		vue({
-			include: [/\.vue$/, /\.md$/],
-		}),
-		md({
-			wrapperComponent: 'DocsWrapper',
-			markdownItOptions: {
-				highlight(str, lang) {
-					if (lang && hljs.getLanguage(lang)) {
-						try {
-							return hljs.highlight(str, { language: lang }).value;
-						} catch (err) {
-							// eslint-disable-next-line no-console
-							console.warn('There was an error highlighting in Markdown');
-							// eslint-disable-next-line no-console
-							console.error(err);
-						}
-					}
-
-					return '';
-				},
-			},
-			markdownItSetup(md) {
-				md.use(require('markdown-it-table-of-contents'), { includeLevel: [2] });
-				md.use(require('markdown-it-anchor'), { permalink: true, permalinkSymbol: '#' });
-
-				function hintRenderer(type) {
-					return (tokens, idx) => {
-						const token = tokens[idx];
-						let title = token.info.trim().slice(type.length).trim() || '';
-
-						if (title) title = `<div class="hint-title">${title}</div>`;
-
-						if (token.nesting === 1) {
-							return `<div class="${type} hint">${title}\n`;
-						} else {
-							return '</div>\n';
-						}
-					};
-				}
-
-				md.use(require('markdown-it-container'), 'tip', { render: hintRenderer('tip') });
-				md.use(require('markdown-it-container'), 'warning', { render: hintRenderer('warning') });
-				md.use(require('markdown-it-container'), 'danger', { render: hintRenderer('danger') });
-
-				md.core.ruler.push('router-link', (state) => {
-					state.tokens.forEach((token) => {
-						if (token.type === 'inline') {
-							const inlineTokens = token.children;
-
-							let isTraversingLink = false;
-							for (let i = 0; i < inlineTokens.length; i++) {
-								if (isTraversingLink && inlineTokens[i].type === 'link_close') {
-									inlineTokens[i].tag = 'router-link';
-
-									isTraversingLink = false;
-								} else if (inlineTokens[i].type === 'link_open') {
-									const href = inlineTokens[i].attrs.find((attr) => attr[0] === 'href');
-
-									if (href) {
-										if (href[1].startsWith('http')) {
-											inlineTokens[i].attrs.push(['target', '_blank']);
-											inlineTokens[i].attrs.push(['rel', 'noopener noreferrer']);
-										} else if (!href[1].startsWith('#')) {
-											inlineTokens[i].tag = 'router-link';
-											inlineTokens[i].attrs = [['to', `/docs${href[1]}`]];
-
-											isTraversingLink = true;
-										}
-									}
-								}
-							}
-						}
-					});
-				});
-			},
-			transforms: {
-				before(code) {
-					const titleRegex = /^# ([^\n]+?)( <small><\/small>)?\n/m;
-
-					const titleLine = code.match(titleRegex);
-
-					const title = titleLine[1] ?? null;
-					const modularExtension = Boolean(titleLine[2]);
-					const codeWithoutTitle = code.replace(titleRegex, '');
-
-					const newCode = `---\ntitle: "${title}"\nmodularExtension: ${modularExtension}${
-						code.startsWith('---\n') ? codeWithoutTitle.substring(3) : `\n---\n\n${codeWithoutTitle}`
-					}`;
-
-					return newCode;
-				},
-			},
-		}),
+		vue(),
+		UnheadVite(),
 		yaml({
 			transform(data) {
 				return data === null ? {} : undefined;
 			},
 		}),
+		{
+			name: 'watch-directus-dependencies',
+			configureServer: (server) => {
+				server.watcher.options = {
+					...server.watcher.options,
+					ignored: [/node_modules\/(?!@directus\/).*/, '**/.git/**'],
+				};
+			},
+		},
+		vueDevtools(),
 	],
+	define: {
+		__VUE_I18N_LEGACY_API__: false,
+	},
 	resolve: {
 		alias: [{ find: '@', replacement: path.resolve(__dirname, 'src') }],
 	},
-	base: process.env.NODE_ENV === 'production' ? '' : '/admin/',
-	server: {
-		port: 8080,
-		proxy: {
-			'^/(?!admin)': {
-				target: process.env.API_URL ? process.env.API_URL : 'http://localhost:8055/',
-				changeOrigin: true,
+	base: process.env.NODE_ENV === 'production' ? '' : '/admin',
+	...(!process.env.HISTOIRE && {
+		server: {
+			port: 8080,
+			proxy: {
+				'^/(?!admin)': {
+					target: process.env.API_URL ? process.env.API_URL : 'http://127.0.0.1:8055/',
+					changeOrigin: true,
+				},
+				'/websocket/logs': {
+					target: process.env.API_URL ? process.env.API_URL : 'ws://127.0.0.1:8055/',
+					changeOrigin: true,
+				},
+			},
+			fs: {
+				allow: [searchForWorkspaceRoot(process.cwd()), ...getExtensionsRealPaths()],
 			},
 		},
-		fs: {
-			allow: [searchForWorkspaceRoot(process.cwd()), '/admin/'],
+	}),
+	test: {
+		environment: 'happy-dom',
+		deps: {
+			optimizer: {
+				web: {
+					exclude: ['pinia', 'url'],
+				},
+			},
 		},
 	},
 });
 
-function directusExtensions() {
-	const prefix = '@directus-extensions-';
-	const virtualIds = APP_EXTENSION_TYPES.map((type) => `${prefix}${type}`);
+function getExtensionsRealPaths() {
+	return extensionsPathExists
+		? fs
+				.readdirSync(EXTENSIONS_PATH)
+				.flatMap((typeDir) => {
+					const extensionTypeDir = path.join(EXTENSIONS_PATH, typeDir);
+					if (!fs.statSync(extensionTypeDir).isDirectory()) return;
+					return fs.readdirSync(extensionTypeDir).map((dir) => fs.realpathSync(path.join(extensionTypeDir, dir)));
+				})
+				.filter((v) => v)
+		: [];
+}
 
-	let extensionEntrys = {};
+function directusExtensions() {
+	const virtualExtensionsId = '@directus-extensions';
+
+	let extensionsEntrypoint = null;
 
 	return [
 		{
@@ -155,15 +117,13 @@ function directusExtensions() {
 				await loadExtensions();
 			},
 			resolveId(id) {
-				if (virtualIds.includes(id)) {
+				if (id === virtualExtensionsId) {
 					return id;
 				}
 			},
 			load(id) {
-				if (virtualIds.includes(id)) {
-					const extensionType = id.substring(prefix.length);
-
-					return extensionEntrys[extensionType];
+				if (id === virtualExtensionsId) {
+					return extensionsEntrypoint;
 				}
 			},
 		},
@@ -178,9 +138,9 @@ function directusExtensions() {
 							...APP_SHARED_DEPS.reduce((acc, dep) => ({ ...acc, [dep.replace(/\//g, '_')]: dep }), {}),
 						},
 						output: {
-							entryFileNames: '[name].[hash].js',
+							entryFileNames: 'assets/[name].[hash].entry.js',
 						},
-						external: virtualIds,
+						external: [virtualExtensionsId],
 						preserveEntrySignatures: 'exports-only',
 					},
 				},
@@ -189,17 +149,54 @@ function directusExtensions() {
 	];
 
 	async function loadExtensions() {
-		const apiPath = path.join('..', 'api');
-		const extensionsPath = path.join(apiPath, 'extensions');
+		const localExtensions = extensionsPathExists ? await resolveFsExtensions(EXTENSIONS_PATH) : new Map();
+		const moduleExtensions = await resolveModuleExtensions(API_PATH);
 
-		await ensureExtensionDirs(extensionsPath, APP_EXTENSION_TYPES);
-		const packageExtensions = await getPackageExtensions(apiPath, APP_EXTENSION_PACKAGE_TYPES);
-		const localExtensions = await getLocalExtensions(extensionsPath, APP_EXTENSION_TYPES);
+		const registryExtensions = extensionsPathExists
+			? await resolveFsExtensions(path.join(EXTENSIONS_PATH, '.registry'))
+			: new Map();
 
-		const extensions = [...packageExtensions, ...localExtensions];
+		const mockSetting = (source, folder, extension) => {
+			const settings = [
+				{
+					id: extension.name,
+					enabled: true,
+					folder: folder,
+					bundle: null,
+					source: source,
+				},
+			];
 
-		for (const extensionType of APP_EXTENSION_TYPES) {
-			extensionEntrys[extensionType] = generateExtensionsEntry(extensionType, extensions);
-		}
+			if (extension.type === 'bundle') {
+				settings.push(
+					...extension.entries.map((entry) => ({
+						enabled: true,
+						folder: entry.name,
+						bundle: extension.name,
+						source: source,
+					})),
+				);
+			}
+
+			return settings;
+		};
+
+		// default to enabled for app extension in developer mode
+		const extensionSettings = [
+			...Array.from(localExtensions.entries()).flatMap(([folder, extension]) =>
+				mockSetting('local', folder, extension),
+			),
+			...Array.from(moduleExtensions.entries()).flatMap(([folder, extension]) =>
+				mockSetting('module', folder, extension),
+			),
+			...Array.from(registryExtensions.entries()).flatMap(([folder, extension]) =>
+				mockSetting('registry', folder, extension),
+			),
+		];
+
+		extensionsEntrypoint = generateExtensionsEntrypoint(
+			{ module: moduleExtensions, local: localExtensions, registry: registryExtensions },
+			extensionSettings,
+		);
 	}
 }

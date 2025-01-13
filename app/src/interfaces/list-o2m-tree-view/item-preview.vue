@@ -1,80 +1,94 @@
+<script setup lang="ts">
+import { useI18n } from 'vue-i18n';
+import DrawerItem from '@/views/private/components/drawer-item.vue';
+import { RelationO2M } from '@/composables/use-relation-o2m';
+import { ref } from 'vue';
+
+const props = withDefaults(
+	defineProps<{
+		collection: string;
+		template: string;
+		item: Record<string, any>;
+		edits: Record<string, any>;
+		relationInfo: RelationO2M;
+		disabled?: boolean;
+		open?: boolean;
+		deleted: boolean;
+		deleteIcon: string;
+	}>(),
+	{
+		disabled: false,
+		open: false,
+	},
+);
+
+const { t } = useI18n();
+const emit = defineEmits(['update:open', 'deselect', 'input']);
+const editActive = ref(false);
+</script>
+
 <template>
-	<div class="preview">
+	<div class="preview" :class="{ open, deleted }">
+		<v-icon
+			v-if="relationInfo.relatedPrimaryKeyField.field in item"
+			:name="props.open ? 'expand_more' : 'chevron_right'"
+			clickable
+			@click="emit('update:open', !props.open)"
+		/>
 		<render-template :collection="collection" :template="template" :item="item" />
 		<div class="spacer" />
 		<div v-if="!disabled" class="actions">
 			<v-icon v-tooltip="t('edit')" name="launch" clickable @click="editActive = true" />
-			<v-icon v-tooltip="t('deselect')" name="clear" clickable @click="$emit('deselect')" />
+			<v-icon v-tooltip="t('deselect')" :name="deleteIcon" class="deselect" clickable @click="$emit('deselect')" />
 		</div>
 
 		<drawer-item
 			v-model:active="editActive"
 			:collection="collection"
-			:primary-key="item[primaryKeyField] || '+'"
-			:edits="item"
-			:circular-field="parentField"
+			:primary-key="item[props.relationInfo.relatedPrimaryKeyField.field] || '+'"
+			:edits="edits"
+			:circular-field="props.relationInfo.reverseJunctionField.field"
 			@input="$emit('input', $event)"
 		/>
 	</div>
 </template>
 
-<script lang="ts">
-import { useI18n } from 'vue-i18n';
-import { defineComponent, ref } from 'vue';
-import DrawerItem from '@/views/private/components/drawer-item';
-
-export default defineComponent({
-	components: { DrawerItem },
-	props: {
-		collection: {
-			type: String,
-			required: true,
-		},
-		template: {
-			type: String,
-			required: true,
-		},
-		item: {
-			type: Object,
-			required: true,
-		},
-		primaryKeyField: {
-			type: String,
-			required: true,
-		},
-		disabled: {
-			type: Boolean,
-			default: false,
-		},
-		parentField: {
-			type: String,
-			required: true,
-		},
-	},
-	emits: ['deselect', 'input'],
-	setup() {
-		const { t } = useI18n();
-
-		const editActive = ref(false);
-		return { t, editActive };
-	},
-});
-</script>
-
 <style lang="scss" scoped>
 .preview {
 	display: flex;
+	height: var(--theme--form--field--input--height);
+	align-items: center;
+
+	&:not(.open) {
+		margin-bottom: 12px;
+	}
 
 	.spacer {
 		flex-grow: 1;
 	}
 
 	.actions {
-		--v-icon-color: var(--foreground-subdued);
-		--v-icon-color-hover: var(--foreground-normal);
+		--v-icon-color: var(--theme--form--field--input--foreground-subdued);
+		--v-icon-color-hover: var(--theme--form--field--input--foreground);
+		flex-shrink: 0;
+		margin-left: 8px;
 
 		.v-icon + .v-icon {
 			margin-left: 4px;
+		}
+
+		.deselect {
+			--v-icon-color-hover: var(--theme--danger);
+		}
+	}
+
+	&.deleted {
+		color: var(--theme--danger);
+		background-color: var(--danger-10);
+
+		.actions {
+			--v-icon-color: var(--danger-50);
+			--v-icon-color-hover: var(--theme--danger);
 		}
 	}
 }

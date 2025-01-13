@@ -1,7 +1,4 @@
-import { customAlphabet } from 'nanoid';
-
-const generateID = customAlphabet('abcdefghijklmnopqrstuvxyz', 5);
-
+import { getSimpleHash } from '@directus/utils';
 /**
  * Generate an index name for a given collection + fields combination.
  *
@@ -14,16 +11,16 @@ const generateID = customAlphabet('abcdefghijklmnopqrstuvxyz', 5);
 export function getDefaultIndexName(
 	type: 'unique' | 'foreign' | 'index',
 	collection: string,
-	fields: string | string[]
+	fields: string | string[],
 ): string {
 	if (!Array.isArray(fields)) fields = fields ? [fields] : [];
 	const table = collection.replace(/\.|-/g, '_');
 	const indexName = (table + '_' + fields.join('_') + '_' + type).toLowerCase();
 
-	if (indexName.length <= 64) return indexName;
+	if (indexName.length <= 60) return indexName;
 
-	const suffix = `__${generateID()}_${type}`;
-	const prefix = indexName.substring(0, 64 - suffix.length);
+	const suffix = `__${getSimpleHash(indexName)}_${type}`;
+	const prefix = indexName.substring(0, 60 - suffix.length);
 
-	return `${prefix}__${generateID()}_${type}`;
+	return `${prefix}${suffix}`;
 }
