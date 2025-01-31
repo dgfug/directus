@@ -1,7 +1,8 @@
 import api from '@/api';
-import { useUserStore } from '@/stores/';
-import { Preset } from '@directus/shared/types';
-import { cloneDeep, merge } from 'lodash';
+import { useUserStore } from '@/stores/user';
+import { fetchAll } from '@/utils/fetch-all';
+import { Preset } from '@directus/types';
+import { cloneDeep, merge, orderBy } from 'lodash';
 import { nanoid } from 'nanoid';
 import { defineStore } from 'pinia';
 
@@ -15,6 +16,8 @@ const defaultPreset: Omit<Preset, 'collection'> = {
 	layout_query: null,
 	layout_options: null,
 	refresh_interval: null,
+	icon: 'bookmark',
+	color: null,
 };
 
 const systemDefaults: Record<string, Partial<Preset>> = {
@@ -30,7 +33,7 @@ const systemDefaults: Record<string, Partial<Preset>> = {
 			cards: {
 				icon: 'insert_drive_file',
 				title: '{{ title }}',
-				subtitle: '{{ type }} • {{ filesize }}',
+				subtitle: '{{ type }} • {{ filesize }}',
 				size: 4,
 				imageFit: 'crop',
 			},
@@ -65,7 +68,7 @@ const systemDefaults: Record<string, Partial<Preset>> = {
 		layout_options: {
 			tabular: {
 				widths: {
-					action: 100,
+					action: 120,
 					collection: 210,
 					timestamp: 240,
 					user: 240,
@@ -78,7 +81,27 @@ const systemDefaults: Record<string, Partial<Preset>> = {
 		layout: 'tabular',
 		layout_query: {
 			tabular: {
+				sort: ['name'],
 				fields: ['icon', 'name', 'description'],
+			},
+		},
+		layout_options: {
+			tabular: {
+				widths: {
+					icon: 36,
+					name: 248,
+					description: 500,
+				},
+			},
+		},
+	},
+	directus_policies: {
+		collection: 'directus_policies',
+		layout: 'tabular',
+		layout_query: {
+			tabular: {
+				sort: ['name'],
+				fields: ['icon', 'name', 'app_access', 'admin_access', 'description'],
 			},
 		},
 		layout_options: {
@@ -111,6 +134,25 @@ const systemDefaults: Record<string, Partial<Preset>> = {
 			},
 		},
 	},
+	directus_presets: {
+		collection: 'directus_presets',
+		layout: 'tabular',
+		layout_query: {
+			tabular: {
+				fields: ['bookmark', 'collection', 'user', 'role'],
+			},
+		},
+		layout_options: {
+			tabular: {
+				widths: {
+					bookmark: 200,
+					collection: 200,
+					user: 200,
+					role: 200,
+				},
+			},
+		},
+	},
 };
 
 const currentUpdate: Record<number, string> = {};
@@ -122,41 +164,49 @@ export const usePresetsStore = defineStore({
 	}),
 	getters: {
 		bookmarks(): Preset[] {
-			return this.collectionPresets.filter((preset) => preset.bookmark !== null);
+			return orderBy(
+				this.collectionPresets.filter((preset) => preset.bookmark !== null),
+				[
+					(preset) => preset.user === null && preset.role === null,
+					(preset) => preset.user === null && preset.role !== null,
+					'bookmark',
+				],
+			);
 		},
 	},
 	actions: {
 		async hydrate() {
+			const userStore = useUserStore();
+			if (!userStore.currentUser || 'share' in userStore.currentUser) return;
+
 			// Hydrate is only called for logged in users, therefore, currentUser exists
-			const { id, role } = useUserStore().currentUser!;
+			const { id, role } = userStore.currentUser;
 
 			const values = await Promise.all([
 				// All user saved bookmarks and presets
-				api.get(`/presets`, {
+				fetchAll<any>(`/presets`, {
 					params: {
 						'filter[user][_eq]': id,
-						limit: -1,
 					},
 				}),
-				// All role saved bookmarks and presets
-				api.get(`/presets`, {
-					params: {
-						'filter[role][_eq]': role.id,
-						'filter[user][_null]': true,
-						limit: -1,
-					},
-				}),
+				role?.id // All role saved bookmarks and presets
+					? fetchAll<any>(`/presets`, {
+							params: {
+								'filter[role][_eq]': role.id,
+								'filter[user][_null]': true,
+							},
+					  })
+					: Promise.resolve([]),
 				// All global saved bookmarks and presets
-				api.get(`/presets`, {
+				fetchAll<any>(`/presets`, {
 					params: {
 						'filter[role][_null]': true,
 						'filter[user][_null]': true,
-						limit: -1,
 					},
 				}),
 			]);
 
-			const presets = values.map((response) => response.data.data).flat();
+			const presets = values.flat();
 
 			// Inject system defaults if they don't exist
 			for (const systemCollection of Object.keys(systemDefaults)) {
@@ -201,23 +251,24 @@ export const usePresetsStore = defineStore({
 
 			return response.data.data;
 		},
-		async delete(id: number) {
-			await api.delete(`/presets/${id}`);
+		async delete(ids: number[]) {
+			await api.delete('/presets', { data: ids });
 
 			this.collectionPresets = this.collectionPresets.filter((preset) => {
-				return preset.id !== id;
+				return !ids.includes(preset.id!);
 			});
 		},
 
 		/**
 		 * Retrieves the most specific preset that applies to the given collection for the current
 		 * user. If the user doesn't have a preset for this collection, it will fallback to the
-		 * role and collection presets respectivly.
+		 * role and collection presets respectively.
 		 */
 		getPresetForCollection(collection: string) {
 			const userStore = useUserStore();
 
 			if (userStore.currentUser === null) return null;
+			if (!('id' in userStore.currentUser)) return null;
 
 			const { id: userID, role: userRole } = userStore.currentUser;
 
@@ -229,7 +280,7 @@ export const usePresetsStore = defineStore({
 
 			const availablePresets = this.collectionPresets.filter((preset) => {
 				const userMatches = preset.user === userID || preset.user === null;
-				const roleMatches = preset.role === userRole.id || preset.role === null;
+				const roleMatches = preset.role === userRole?.id || preset.role === null;
 				const collectionMatches = preset.collection === collection;
 
 				// Filter out all bookmarks
@@ -247,7 +298,7 @@ export const usePresetsStore = defineStore({
 			const userPreset = availablePresets.find((preset) => preset.user === userID);
 			if (userPreset) return userPreset;
 
-			const rolePreset = availablePresets.find((preset) => preset.role === userRole.id);
+			const rolePreset = availablePresets.find((preset) => preset.role === userRole?.id);
 			if (rolePreset) return rolePreset;
 
 			// If the other two already came up empty, we can assume there's only one preset. That
@@ -267,7 +318,7 @@ export const usePresetsStore = defineStore({
 		 * the user. If the preset already exists and is for a user, we update the preset.
 		 * The response gets added to the store.
 		 */
-		async savePreset(preset: Preset) {
+		async savePreset(preset: Partial<Preset>) {
 			const userStore = useUserStore();
 			if (userStore.currentUser === null) return null;
 			const { id: userID } = userStore.currentUser;

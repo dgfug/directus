@@ -1,6 +1,6 @@
-import { Filter, LogicalFilterAND } from '@directus/shared/types';
-import { Knex } from 'knex';
-import { nanoid } from 'nanoid';
+import type { Filter, LogicalFilterAND } from '@directus/types';
+import { parseJSON } from '@directus/utils';
+import type { Knex } from 'knex';
 
 type OldFilter = {
 	key: string;
@@ -18,14 +18,14 @@ export async function up(knex: Knex): Promise<void> {
 		.select<{ id: number; filters: string | OldFilter[]; layout_query: string | Record<string, any> }[]>(
 			'id',
 			'filters',
-			'layout_query'
+			'layout_query',
 		)
 		.from('directus_presets');
 
 	for (const preset of presets) {
 		if (preset.filters) {
 			const oldFilters: OldFilter[] =
-				(typeof preset.filters === 'string' ? JSON.parse(preset.filters) : preset.filters) ?? [];
+				(typeof preset.filters === 'string' ? parseJSON(preset.filters) : preset.filters) ?? [];
 
 			if (oldFilters.length === 0) continue;
 
@@ -52,7 +52,7 @@ export async function up(knex: Knex): Promise<void> {
 
 		if (preset.layout_query) {
 			const layoutQuery: Record<string, any> =
-				typeof preset.layout_query === 'string' ? JSON.parse(preset.layout_query) : preset.layout_query;
+				typeof preset.layout_query === 'string' ? parseJSON(preset.layout_query) : preset.layout_query;
 
 			for (const [layout, query] of Object.entries(layoutQuery)) {
 				if (query.sort) {
@@ -74,6 +74,8 @@ export async function up(knex: Knex): Promise<void> {
 }
 
 export async function down(knex: Knex): Promise<void> {
+	const { nanoid } = await import('nanoid');
+
 	await knex.schema.alterTable('directus_presets', (table) => {
 		table.json('filters');
 	});
@@ -82,14 +84,14 @@ export async function down(knex: Knex): Promise<void> {
 		.select<{ id: number; filter: string | OldFilter[]; layout_query: string | Record<string, any> }[]>(
 			'id',
 			'filter',
-			'layout_query'
+			'layout_query',
 		)
 		.from('directus_presets');
 
 	for (const preset of presets) {
 		if (preset.filter) {
 			const newFilter: LogicalFilterAND =
-				(typeof preset.filter === 'string' ? JSON.parse(preset.filter) : preset.filter) ?? {};
+				(typeof preset.filter === 'string' ? parseJSON(preset.filter) : preset.filter) ?? {};
 
 			if (Object.keys(newFilter).length === 0) continue;
 
@@ -119,7 +121,7 @@ export async function down(knex: Knex): Promise<void> {
 
 		if (preset.layout_query) {
 			const layoutQuery: Record<string, any> =
-				typeof preset.layout_query === 'string' ? JSON.parse(preset.layout_query) : preset.layout_query;
+				typeof preset.layout_query === 'string' ? parseJSON(preset.layout_query) : preset.layout_query;
 
 			for (const [layout, query] of Object.entries(layoutQuery)) {
 				if (query.sort && Array.isArray(query.sort)) {

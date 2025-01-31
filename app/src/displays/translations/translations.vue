@@ -1,137 +1,146 @@
-<template>
-	<value-null v-if="!junctionCollection.collection" />
-	<v-menu v-else show-arrow :disabled="value.length === 0">
-		<template #activator="{ toggle }">
-			<render-template
-				:template="internalTemplate"
-				:item="displayItem"
-				:collection="junctionCollection.collection"
-				@click.stop="toggle"
-			/>
-		</template>
+<script setup lang="ts">
+import { useRelationM2M } from '@/composables/use-relation-m2m';
+import { getCurrentLanguage } from '@/lang/get-current-language';
+import { useFieldsStore } from '@/stores/fields';
+import { isNil } from 'lodash';
+import { computed, toRefs } from 'vue';
 
-		<v-list class="links">
-			<v-list-item v-for="item in translations" :key="item.id">
-				<v-list-item-content>
-					<div class="header">
-						<div class="lang">
-							<v-icon name="translate" small />
-							{{ item.lang }}
-						</div>
-						<v-progress-linear v-tooltip="`${item.progress}%`" :value="item.progress" colorful />
-					</div>
-					<render-template :template="internalTemplate" :item="item.item" :collection="junctionCollection.collection" />
-				</v-list-item-content>
-			</v-list-item>
-		</v-list>
-	</v-menu>
-</template>
+interface Props {
+	collection: string;
+	field: string;
+	type: string;
+	value?: Record<string, any>[];
+	template?: string;
+	userLanguage?: boolean;
+	defaultLanguage?: string;
+	languageField?: string;
+}
 
-<script lang="ts">
-import { defineComponent, computed, PropType, toRefs } from 'vue';
-import ValueNull from '@/views/private/components/value-null';
-import useRelation from '@/composables/use-m2m';
-import { useUserStore } from '@/stores';
-import { notEmpty } from '@/utils/is-empty';
+const props = withDefaults(defineProps<Props>(), {
+	value: () => [],
+	template: undefined,
+	userLanguage: false,
+	defaultLanguage: undefined,
+	languageField: undefined,
+});
 
-export default defineComponent({
-	components: { ValueNull },
-	props: {
-		collection: {
-			type: String,
-			required: true,
-		},
-		field: {
-			type: String,
-			required: true,
-		},
-		value: {
-			type: [Array] as PropType<Record<string, any>[]>,
-			default: null,
-		},
-		template: {
-			type: String,
-			default: null,
-		},
-		userLanguage: {
-			type: Boolean,
-			default: false,
-		},
-		defaultLanguage: {
-			type: String,
-			default: null,
-		},
-		languageField: {
-			type: String,
-			default: null,
-		},
-		type: {
-			type: String,
-			required: true,
-		},
-	},
-	setup(props) {
-		const { collection, field } = toRefs(props);
+const { collection, field } = toRefs(props);
+const fieldsStore = useFieldsStore();
 
-		const {
-			junctionPrimaryKeyField: primaryKeyField,
-			junctionCollection,
-			relation,
-			junctionFields,
-			relationPrimaryKeyField,
-		} = useRelation(collection, field);
+const { relationInfo } = useRelationM2M(collection, field);
 
-		const internalTemplate = computed(() => {
-			return (
-				props.template || junctionCollection.value?.meta?.display_template || `{{ ${primaryKeyField.value!.field} }}`
-			);
-		});
+const internalTemplate = computed(() => {
+	if (!relationInfo.value) return '';
 
-		const displayItem = computed(() => {
-			const langPkField = relationPrimaryKeyField.value?.field;
-			if (!langPkField) return {};
+	const primaryKeyField = relationInfo.value.junctionPrimaryKeyField.field;
+	const collectionDisplayTemplate = relationInfo.value.junctionCollection?.meta?.display_template;
 
-			let item =
-				props.value.find((val) => val?.[relation.value.field]?.[langPkField] === props.defaultLanguage) ??
-				props.value[0];
+	return props.template || collectionDisplayTemplate || `{{ ${primaryKeyField} }}`;
+});
 
-			if (props.userLanguage) {
-				const user = useUserStore();
-				item =
-					props.value.find((val) => val?.[relation.value.field]?.[langPkField] === user.currentUser?.language) ?? item;
-			}
-			return item ?? {};
-		});
+const displayItem = computed(() => {
+	if (!relationInfo.value) return {};
 
-		const writableFields = computed(() =>
-			junctionFields.value.filter(
-				(field) => field.type !== 'alias' && field.meta?.hidden === false && field.meta.readonly === false
-			)
-		);
+	const langPkField = relationInfo.value.relatedPrimaryKeyField.field;
+	const langField = relationInfo.value.junctionField.field;
 
-		const translations = computed(() => {
-			return props.value.map((item) => {
-				const filledFields = writableFields.value.filter((field) => {
-					return field.field in item && notEmpty(item?.[field.field]);
-				}).length;
+	let item = props.value.find((val) => val?.[langField]?.[langPkField] === props.defaultLanguage) ?? props.value[0];
 
-				return {
-					id: item?.[primaryKeyField.value?.field ?? 'id'],
-					lang: item?.[relation.value.field]?.[props.languageField ?? relationPrimaryKeyField.value?.field],
-					progress: Math.round((filledFields / writableFields.value.length) * 100),
-					item,
-				};
-			});
-		});
+	if (props.userLanguage) {
+		const lang = getCurrentLanguage();
+		item = props.value.find((val) => val?.[langField]?.[langPkField] === lang) ?? item;
+	}
 
-		return { primaryKeyField, internalTemplate, junctionCollection, displayItem, translations };
-	},
+	return item ?? {};
+});
+
+const writableFields = computed(() => {
+	if (!relationInfo.value) return [];
+
+	const junctionFields = fieldsStore.getFieldsForCollection(relationInfo.value.junctionCollection.collection);
+
+	return junctionFields.filter(
+		(field) => field.type !== 'alias' && field.meta?.hidden === false && field.meta.readonly === false,
+	);
+});
+
+const translations = computed(() => {
+	if (!relationInfo.value) return [];
+
+	const primaryKeyField = relationInfo.value.junctionPrimaryKeyField.field;
+	const langPkField = relationInfo.value.relatedPrimaryKeyField.field;
+	const langField = relationInfo.value.junctionField.field;
+
+	return props.value.map((item) => {
+		const filledFields = writableFields.value.filter((field) => {
+			return field.field in item && !isNil(item?.[field.field]);
+		}).length;
+
+		return {
+			id: item?.[primaryKeyField ?? 'id'],
+			lang: item?.[langField]?.[props.languageField ?? langPkField],
+			progress: Math.round((filledFields / writableFields.value.length) * 100),
+			item,
+		};
+	});
 });
 </script>
+
+<template>
+	<value-null v-if="!relationInfo?.junctionCollection?.collection" />
+	<div v-else class="display-translations">
+		<render-template
+			:template="internalTemplate"
+			:item="displayItem"
+			:collection="relationInfo.junctionCollection.collection"
+		/>
+		<v-menu class="menu" show-arrow :disabled="value.length === 0">
+			<template #activator="{ toggle, deactivate, active }">
+				<v-icon small class="icon" :class="{ active }" name="info" @click.stop="toggle" @focusout="deactivate"></v-icon>
+			</template>
+
+			<v-list class="links">
+				<v-list-item v-for="item in translations" :key="item.id">
+					<v-list-item-content>
+						<div class="header">
+							<div class="lang">
+								<v-icon name="translate" small />
+								{{ item.lang }}
+							</div>
+							<v-progress-linear v-tooltip="`${item.progress}%`" :value="item.progress" colorful />
+						</div>
+						<render-template
+							:template="internalTemplate"
+							:item="item.item"
+							:collection="relationInfo.junctionCollection.collection"
+						/>
+					</v-list-item-content>
+				</v-list-item>
+			</v-list>
+		</v-menu>
+	</div>
+</template>
 
 <style lang="scss" scoped>
 .v-list {
 	width: 300px;
+}
+
+.display-translations {
+	display: inline-flex;
+	max-width: 100%;
+	align-items: center;
+
+	.icon {
+		color: var(--theme--foreground-subdued);
+		opacity: 0;
+		transition: opacity var(--fast) var(--transition);
+	}
+
+	&:hover .icon,
+	.icon.active {
+		opacity: 1;
+	}
 }
 
 .header {
@@ -139,7 +148,7 @@ export default defineComponent({
 	gap: 20px;
 	align-items: center;
 	justify-content: space-between;
-	color: var(--foreground-subdued);
+	color: var(--theme--foreground-subdued);
 	font-size: 12px;
 
 	.lang {
@@ -166,7 +175,7 @@ export default defineComponent({
 .v-list-item:not(:first-child) {
 	.header {
 		padding-top: 8px;
-		border-top: var(--border-width) solid var(--border-subdued);
+		border-top: var(--theme--border-width) solid var(--theme--border-color-subdued);
 	}
 }
 </style>
